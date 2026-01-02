@@ -1,122 +1,120 @@
+
 import 'dart:isolate';
 import 'dart:typed_data';
 import 'dart:ui';
 import 'package:flutter/material.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
-import 'package:android_alarm_manager_plus/android_alarm_manager_plus.dart';
 
 class AlarmTriggerService {
   static const String _isolatePortName = 'alarm_isolate_port';
-  static const String _channelId = 'alarm_channel_critical';
-  static const String _channelName = 'Critical Alarm Notifications';
 
-  /// This will be called from the background isolate
   @pragma('vm:entry-point')
   static Future<void> fireAlarm(int alarmId) async {
-    debugPrint('🔥 Firing alarm in background: $alarmId');
+    debugPrint('🔥 ========== ALARM FIRING ==========');
+    debugPrint('🔥 Alarm ID: $alarmId');
 
-    // Initialize Flutter binding for background isolate
     WidgetsFlutterBinding.ensureInitialized();
 
-    // Send message to main isolate to start ringing
+    // Try to notify main isolate (works only if app is running)
     final sendPort = IsolateNameServer.lookupPortByName(_isolatePortName);
     if (sendPort != null) {
       sendPort.send(alarmId);
-      debugPrint('✅ Sent alarm ID to main isolate');
+      debugPrint('✅ Notified main isolate');
     } else {
-      debugPrint('❌ Could not find main isolate port');
+      debugPrint('⚠️ Main isolate not available (app killed)');
+      debugPrint('⚠️ Relying on notification to wake user');
     }
 
-    // Show notification with sound and action buttons
+    // Show notification (this ALWAYS works)
     await _showAlarmNotification(alarmId);
   }
 
   static Future<void> _showAlarmNotification(int id) async {
-    final FlutterLocalNotificationsPlugin notifications =
-    FlutterLocalNotificationsPlugin();
+    final notifications = FlutterLocalNotificationsPlugin();
 
     const androidInit = AndroidInitializationSettings('@mipmap/ic_launcher');
-    const initSettings = InitializationSettings(android: androidInit);
-    await notifications.initialize(initSettings);
+    await notifications.initialize(const InitializationSettings(android: androidInit));
 
-    // Create the notification channel with maximum priority
     final androidChannel = AndroidNotificationChannel(
-      _channelId,
-      _channelName,
-      description: 'Critical alarm notifications with sound and vibration',
+      'alarm_channel_max',
+      'Alarm Notifications',
       importance: Importance.max,
       playSound: true,
       sound: const RawResourceAndroidNotificationSound('alarm_sound'),
       enableVibration: true,
-      vibrationPattern: Int64List.fromList(const [0, 1000, 500, 1000, 500, 1000]),
+      vibrationPattern: Int64List.fromList([0, 1000, 500, 1000]),
     );
 
-    // Register the channel
     await notifications
-        .resolvePlatformSpecificImplementation<
-        AndroidFlutterLocalNotificationsPlugin>()
+        .resolvePlatformSpecificImplementation<AndroidFlutterLocalNotificationsPlugin>()
         ?.createNotificationChannel(androidChannel);
 
-    // Create notification with custom sound and action buttons
     final androidDetails = AndroidNotificationDetails(
-      _channelId,
-      _channelName,
-      channelDescription: 'Critical alarm notifications with sound and vibration',
+      'alarm_channel_max',
+      'Alarm Notifications',
       importance: Importance.max,
       priority: Priority.max,
       playSound: true,
       sound: const RawResourceAndroidNotificationSound('alarm_sound'),
       enableVibration: true,
-      vibrationPattern: Int64List.fromList([0, 1000, 500, 1000, 500, 1000]),
-      fullScreenIntent: false, // Set to false to prevent opening app
+      vibrationPattern: Int64List.fromList([0, 1000, 500, 1000]),
+      fullScreenIntent: true,
       category: AndroidNotificationCategory.alarm,
-      ongoing: true,
+      ongoing: true, // Can't be dismissed by swiping
       autoCancel: false,
-      ticker: 'Alarm',
       styleInformation: const BigTextStyleInformation(
-        'Your alarm is ringing! Use the buttons below to dismiss or snooze.',
+        'Open the app to verify you are awake. Auto-snooze in 90 seconds.',
         contentTitle: 'WAKE UP! ⏰',
       ),
-      // Add action buttons that DON'T open the app
-      actions: <AndroidNotificationAction>[
-        const AndroidNotificationAction(
-          'dismiss',
-          'DISMISS',
-          cancelNotification: true,
-          showsUserInterface: false, // Changed to false to prevent opening app
-        ),
-        const AndroidNotificationAction(
-          'snooze',
-          'SNOOZE (5 min)',
-          cancelNotification: false,
-          showsUserInterface: false, // Changed to false to prevent opening app
-        ),
-      ],
     );
-
-    final details = NotificationDetails(android: androidDetails);
 
     await notifications.show(
       id,
       'WAKE UP! ⏰',
-      'Your alarm is ringing! Use buttons to dismiss or snooze.',
-      details,
+      'Tap to verify you are awake',
+      NotificationDetails(android: androidDetails),
       payload: 'alarm:$id',
     );
 
-    debugPrint('✅ Notification shown with sound and vibration');
+    debugPrint('✅ Notification shown');
   }
 
-  /// Setup the receive port in main isolate
+  /// Show notification when auto-snooze activates
+  static Future<void> showAutoSnoozeNotification(int alarmId) async {
+    final notifications = FlutterLocalNotificationsPlugin();
+
+    const androidInit = AndroidInitializationSettings('@mipmap/ic_launcher');
+    await notifications.initialize(const InitializationSettings(android: androidInit));
+
+    final androidDetails = AndroidNotificationDetails(
+      'auto_snooze_channel',
+      'Auto-Snooze Notifications',
+      importance: Importance.high,
+      priority: Priority.high,
+      playSound: false,
+      enableVibration: true,
+      styleInformation: const BigTextStyleInformation(
+        'You didn\'t verify. Alarm rescheduled for 1 minute.',
+        contentTitle: '😴 Alarm Auto-Snoozed',
+      ),
+    );
+
+    await notifications.show(
+      alarmId + 999999, // Different ID to not conflict
+      '😴 Alarm Auto-Snoozed',
+      'Will ring again in 1 minute',
+      NotificationDetails(android: androidDetails),
+    );
+  }
+
   static void setupIsolatePort(Function(int) onAlarmReceived) {
     final receivePort = ReceivePort();
     IsolateNameServer.removePortNameMapping(_isolatePortName);
-    IsolateNameServer.registerPortWithName(
-        receivePort.sendPort, _isolatePortName);
+    IsolateNameServer.registerPortWithName(receivePort.sendPort, _isolatePortName);
 
-    receivePort.listen((dynamic data) {
+    receivePort.listen((data) {
       if (data is int) {
-        debugPrint('📨 Received alarm ID in main isolate: $data');
+        debugPrint('📨 Main isolate received: $data');
         onAlarmReceived(data);
       }
     });

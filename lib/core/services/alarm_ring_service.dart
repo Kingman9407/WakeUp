@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'package:audioplayers/audioplayers.dart';
 import 'package:flutter/material.dart';
 import 'package:vibration/vibration.dart';
@@ -5,6 +6,7 @@ import 'package:vibration/vibration.dart';
 class AlarmRingService {
   static AudioPlayer? _audioPlayer;
   static bool _isRinging = false;
+  static Timer? _autoStopTimer;
 
   /// Start ringing the alarm with sound and vibration
   static Future<void> startRinging() async {
@@ -43,6 +45,14 @@ class AlarmRingService {
       }
 
       debugPrint('🔊 Alarm sound started');
+
+      // Auto-stop after 1 minute (60 seconds)
+      _autoStopTimer = Timer(const Duration(minutes: 1), () {
+        debugPrint('⏰ 1 minute elapsed, auto-stopping alarm...');
+        stopRinging();
+      });
+      debugPrint('⏱️ Auto-stop timer set for 1 minute');
+
     } catch (e) {
       debugPrint('❌ Error starting alarm: $e');
     }
@@ -55,6 +65,10 @@ class AlarmRingService {
     debugPrint('🔕 Stopping alarm...');
 
     try {
+      // Cancel auto-stop timer
+      _autoStopTimer?.cancel();
+      _autoStopTimer = null;
+
       // Stop vibration
       await Vibration.cancel();
       debugPrint('📳 Vibration stopped');

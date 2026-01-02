@@ -1,12 +1,12 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
-import 'package:wake_up_bud/features/provider/alarm_provider.dart';
-import 'package:wake_up_bud/features/screens/alarm_home.dart';
-import 'package:wake_up_bud/features/screens/alarm_ring_screen.dart';
+import 'package:wake_up_new/features/provider/alarm_provider.dart';
+import 'package:wake_up_new/features/screens/alarm_home.dart';
+import 'package:wake_up_new/features/screens/alarm_ring_screen.dart';
 import 'package:android_alarm_manager_plus/android_alarm_manager_plus.dart';
-import 'package:wake_up_bud/core/services/alarm_service.dart';
-import 'package:wake_up_bud/core/services/alarm_trigger_service.dart';
-import 'package:wake_up_bud/core/services/alarm_ring_service.dart';
+import 'package:wake_up_new/core/services/alarm_service.dart';
+import 'package:wake_up_new/core/services/alarm_trigger_service.dart';
+import 'package:wake_up_new/core/services/alarm_ring_service.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 
@@ -17,12 +17,12 @@ void alarmCallback(int id) async {
   await AlarmService.triggerAlarm(id);
 }
 
-// ADDED: Top-level callback for auto-snooze
+// Top-level callback for auto-snooze
 @pragma('vm:entry-point')
 void autoSnoozeCallback(int id) async {
   WidgetsFlutterBinding.ensureInitialized();
   debugPrint('😴 Auto-snooze triggered for alarm: $id');
-  await AlarmService.triggerAlarm(id);
+  await AlarmService.triggerAutoSnooze(id);
 }
 
 // Global navigation key
@@ -35,8 +35,11 @@ FlutterLocalNotificationsPlugin();
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
+  debugPrint('🚀 ========== APP STARTING ==========');
+
   // Initialize alarm manager
   await AndroidAlarmManager.initialize();
+  debugPrint('✅ AndroidAlarmManager initialized');
 
   // Request Android permissions
   await _requestAndroidPermissions();
@@ -47,10 +50,15 @@ void main() async {
   // Setup isolate communication
   AlarmTriggerService.setupIsolatePort(_onAlarmReceived);
 
+  // Create and initialize AlarmProvider
+  final alarmProvider = AlarmProvider();
+  await alarmProvider.initialize(); // ✅ Load alarms from storage
+  debugPrint('✅ AlarmProvider initialized with ${alarmProvider.alarm.length} alarms');
+
   runApp(
     MultiProvider(
       providers: [
-        ChangeNotifierProvider(create: (_) => AlarmProvider()),
+        ChangeNotifierProvider.value(value: alarmProvider), // ✅ Use .value
       ],
       child: const MyApp(),
     ),
@@ -65,10 +73,10 @@ void _onAlarmReceived(int alarmId) {
   AlarmRingService.startRinging();
 
   // Navigate to alarm screen if not already there
-  final currentRoute = navigatorKey.currentState?.overlay?.context;
-  if (currentRoute != null) {
-    final route = ModalRoute.of(currentRoute);
-    if (route?.settings.name != '/alarm-ring') {
+  final currentContext = navigatorKey.currentContext;
+  if (currentContext != null) {
+    final currentRoute = ModalRoute.of(currentContext);
+    if (currentRoute?.settings.name != '/alarm-ring') {
       navigatorKey.currentState?.pushNamed(
         '/alarm-ring',
         arguments: alarmId,
@@ -120,7 +128,7 @@ Future<void> _initializeNotifications() async {
 }
 
 void _handleNotificationResponse(NotificationResponse response) {
-  debugPrint('🔔 Notification action: ${response.actionId}');
+  debugPrint('🔔 Notification tapped: ${response.payload}');
 
   // Parse alarm ID from payload
   int? alarmId;
@@ -133,17 +141,13 @@ void _handleNotificationResponse(NotificationResponse response) {
     return;
   }
 
-  // FIXED: Handle dismiss action - stop ringing and cancel notification
+  // Handle dismiss action
   if (response.actionId == 'dismiss') {
-    debugPrint('🔕 Dismiss requested - stopping alarm');
+    debugPrint('🔕 Dismiss requested via notification');
 
-    // Stop the alarm sound and vibration
     AlarmRingService.stopRinging();
-
-    // Cancel the notification
     notificationsPlugin.cancel(alarmId);
 
-    // Pop any alarm ring screens
     if (navigatorKey.currentState?.canPop() ?? false) {
       navigatorKey.currentState?.popUntil((route) => route.isFirst);
     }
@@ -153,13 +157,11 @@ void _handleNotificationResponse(NotificationResponse response) {
 
   // Handle snooze action
   if (response.actionId == 'snooze') {
-    debugPrint('😴 Snooze requested');
+    debugPrint('😴 Snooze requested via notification');
 
-    // Stop current alarm
     AlarmRingService.stopRinging();
     notificationsPlugin.cancel(alarmId);
 
-    // Schedule snooze for 5 minutes
     final snoozeTime = DateTime.now().add(const Duration(minutes: 5));
     AndroidAlarmManager.oneShotAt(
       snoozeTime,
@@ -173,15 +175,19 @@ void _handleNotificationResponse(NotificationResponse response) {
     return;
   }
 
-  // Default tap behavior - navigate to face recognition screen
-  if (response.actionId == null) {
-    debugPrint('📱 Notification tapped - navigating to face verification');
+  // Default: Navigate to alarm ring screen
+  debugPrint('📱 Navigating to alarm screen for ID: $alarmId');
 
-    navigatorKey.currentState?.pushNamed(
-      '/alarm-ring',
-      arguments: alarmId,
-    );
+  // Start ringing if not already
+  if (!AlarmRingService.isRinging) {
+    AlarmRingService.startRinging();
   }
+
+  // Navigate to the alarm screen
+  navigatorKey.currentState?.pushNamed(
+    '/alarm-ring',
+    arguments: alarmId,
+  );
 }
 
 class MyApp extends StatelessWidget {
@@ -199,9 +205,42 @@ class MyApp extends StatelessWidget {
       ),
       home: const AlarmHome(),
       routes: {
-        '/alarm-ring': (context) => AlarmRingScreen(
-          alarmId: ModalRoute.of(context)!.settings.arguments as int,
-        ),
+        '/alarm-ring': (context) {
+          final alarmId = ModalRoute.of(context)!.settings.arguments as int;
+
+          // Get the alarm from provider
+          final alarmProvider = Provider.of<AlarmProvider>(context, listen: false);
+          final alarm = alarmProvider.getAlarmById(alarmId);
+
+          if (alarm == null) {
+            debugPrint('⚠️ Alarm $alarmId not found in provider!');
+            // Return a fallback screen or pop back
+            return Scaffold(
+              appBar: AppBar(title: const Text('Alarm Not Found')),
+              body: Center(
+                child: Column(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    const Icon(Icons.error_outline, size: 64, color: Colors.red),
+                    const SizedBox(height: 16),
+                    const Text('This alarm no longer exists'),
+                    const SizedBox(height: 24),
+                    ElevatedButton(
+                      onPressed: () {
+                        AlarmRingService.stopRinging();
+                        notificationsPlugin.cancel(alarmId);
+                        Navigator.of(context).pop();
+                      },
+                      child: const Text('Go Back'),
+                    ),
+                  ],
+                ),
+              ),
+            );
+          }
+
+          return AlarmRingScreen(alarmId: alarmId);
+        },
       },
     );
   }
