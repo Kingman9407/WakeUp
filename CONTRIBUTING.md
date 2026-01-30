@@ -29,6 +29,10 @@ You can help by:
 Click the **Fork** button on GitHub.
 
 ### 2. Clone Your Fork
-```bash
+
 git clone https://github.com/your-username/project-name.git
 cd project-name
+
+
+### 3. Create a New Branch
+git checkout -b feature/your-feature-name
